@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Dudes Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Estilos adicionais para garantir que o jogo não role a tela no mobile (touch-action) */
+        body {
+            background: radial-gradient(circle at top, #333333 0%, #000000 100%); /* Fundo mais vivo com gradiente */
+            color: #fff; /* Texto Branco Corinthians */
+            touch-action: none; /* Previne scroll acidental ao jogar no celular */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        canvas {
+            background-color: #1a1a1a; 
+            border: 3px solid #fff;
+            border-radius: 12px;
+            box-shadow: 0 0 25px rgba(255, 255, 255, 0.2), 0 0 10px rgba(200, 0, 0, 0.5); /* Sombra mais destacada com toque de vermelho */
+            width: 100%;
+            height: auto;
+            image-rendering: pixelated; /* Mantém o aspecto retrô */
+        }
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(6px); 
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            border-radius: 12px;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <!-- Cabeçalho -->
+    <div class="text-center mb-6 z-10 relative">
+        <h1 class="text-5xl font-extrabold uppercase tracking-widest inline-flex items-center gap-3 mb-2 drop-shadow-lg shadow-black">
+            <span>Dudes Game</span>
+        </h1>
+        <div class="text-xl font-mono flex justify-between w-full max-w-[400px] mt-2 bg-black/60 p-3 rounded-xl border border-gray-700 shadow-lg">
+            <span class="font-bold text-gray-300">Pontos: <span id="scoreDisplay" class="text-white">0</span></span>
+            <span class="font-bold text-gray-300">Recorde: <span id="highScoreDisplay" class="text-red-500">0</span></span>
+        </div>
+    </div>
+
+    <!-- Área de Jogo -->
+    <div id="game-container">
+        <!-- Canvas interno fixo em 400x400, o CSS dimensiona visualmente -->
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+
+        <!-- Overlay de Tela Inicial / Fim de Jogo -->
+        <div id="ui-overlay" class="overlay">
+            <h2 id="overlay-title" class="text-3xl font-extrabold mb-4 text-center px-4 drop-shadow-md">Bem vinda Sagradete</h2>
+            <p id="overlay-subtitle" class="text-gray-200 mb-8 text-center text-md px-4 font-medium">Só deslizar na tela pra jogar aí</p>
+            <button id="start-btn" class="bg-gradient-to-r from-gray-100 to-gray-300 text-black font-extrabold py-3 px-10 rounded-full hover:scale-105 transition-transform uppercase tracking-wider shadow-[0_0_20px_rgba(255,255,255,0.3)] focus:outline-none">
+                Iniciar Jogo
+            </button>
+        </div>
+    </div>
+
+    <!-- Rodapé/Instruções -->
+    <div class="mt-8 text-center text-gray-400 text-sm">
+        <p>Desenvolvido por um flamenguista ❤️🖤</p>
+    </div>
+
+    <script>
+        /**
+         * Arquitetura do Jogo:
+         * Utiliza o padrão Game Loop simples.
+         * Grade de jogo de 20x20. Cada célula tem 20px (400 / 20).
+         */
+
+        // Elementos do DOM
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const scoreDisplay = document.getElementById("scoreDisplay");
+        const highScoreDisplay = document.getElementById("highScoreDisplay");
+        const overlay = document.getElementById("ui-overlay");
+        const overlayTitle = document.getElementById("overlay-title");
+        const overlaySubtitle = document.getElementById("overlay-subtitle");
+        const startBtn = document.getElementById("start-btn");
+
+        // Constantes do Jogo
+        const TILE_SIZE = 20;
+        const TILE_COUNT = canvas.width / TILE_SIZE; // 20
+        const GAME_SPEED = 100; // ms por frame (quanto menor, mais rápido)
+
+        // Variáveis de Estado (State Management)
+        let snake = [];
+        let dx = 0; // Direção X
+        let dy = 0; // Direção Y
+        let foodX;
+        let foodY;
+        let score = 0;
+        let highScore = localStorage.getItem("dudesGameHighScore") || 0;
+        let gameLoopTimeout;
+        let isPlaying = false;
+        let changingDirection = false; // Previne o bug de virar sobre si mesmo rapidamente
+
+        // Instancia o objeto de imagem em memória para usar como "comida"
+        const foodImg = new Image();
+        let isFoodImgLoaded = false;
+        let foodSpin = 0;
+        foodImg.onload = () => { isFoodImgLoaded = true; };
+        foodImg.src = "corinthians.png";
+
+        // Áudio de fim de jogo: evita fontes instáveis e permite fallback
+        const anthemAudio = new Audio();
+        anthemAudio.preload = "auto";
+        anthemAudio.crossOrigin = "anonymous";
+        const anthemSources = [
+            // Preferência 1: arquivo local (coloque um `hino-do-corinthians.mp3` na pasta do projeto)
+            "corinthians.mp3",
+            // Preferência 2: link antigo (fallback, pode falhar dependendo do host)
+            "https://www.myinstants.com/media/sounds/hino-do-corinthians.mp3",
+        ];
+        anthemAudio.src = anthemSources[0];
+        let audioUnlocked = false;
+
+        function ensureAudioUnlocked() {
+            if (audioUnlocked) return;
+
+            // Precisa acontecer dentro de uma ação do usuário (click/touch/tecla) pra evitar bloqueio de autoplay.
+            anthemAudio.volume = 0.001;
+            anthemAudio.currentTime = 0;
+
+            const tryPlay = () => anthemAudio.play();
+            const p = tryPlay();
+            if (!p || typeof p.then !== "function") return;
+
+            p.then(() => {
+                audioUnlocked = true;
+                setTimeout(() => {
+                    anthemAudio.pause();
+                    anthemAudio.currentTime = 0;
+                    anthemAudio.volume = 1;
+                }, 50);
+            }).catch(() => {
+                // Se falhar (fonte bloqueada/fora do ar), tenta o próximo fallback e aguarda nova interação.
+                const currentIdx = anthemSources.indexOf(anthemAudio.src);
+                const nextIdx = currentIdx >= 0 ? currentIdx + 1 : 1;
+                if (nextIdx < anthemSources.length) {
+                    anthemAudio.src = anthemSources[nextIdx];
+                    anthemAudio.load();
+                }
+            });
+        }
+
+        // Inicialização de UI
+        highScoreDisplay.textContent = highScore;
+
+        // Configuração de Eventos
+        startBtn.addEventListener('click', () => {
+            ensureAudioUnlocked();
+            initGame();
+        });
+        document.addEventListener("keydown", (e) => {
+            ensureAudioUnlocked();
+            handleKeyPress(e);
+        });
+
+        // Suporte Mobile (Gestos / Swipe)
+        let touchStartX = 0;
+        let touchStartY = 0;
+        
+        canvas.addEventListener('touchstart', function(e) {
+            ensureAudioUnlocked();
+            touchStartX = e.changedTouches[0].screenX;
+            touchStartY = e.changedTouches[0].screenY;
+            e.preventDefault(); // Previne scroll
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', function(e) {
+            let touchEndX = e.changedTouches[0].screenX;
+            let touchEndY = e.changedTouches[0].screenY;
+            handleSwipe(touchStartX, touchStartY, touchEndX, touchEndY);
+            e.preventDefault();
+        }, { passive: false });
+
+        /**
+         * Inicializa as variáveis e inicia o loop do jogo
+         */
+        function initGame() {
+            // Estado inicial da cobra (no centro)
+            snake = [
+                { x: 10, y: 10 },
+                { x: 9, y: 10 },
+                { x: 8, y: 10 }
+            ];
+            
+            // Inicia movendo para a direita
+            dx = 1; 
+            dy = 0;
+            score = 0;
+            scoreDisplay.textContent = score;
+            isPlaying = true;
+            
+            overlay.style.display = 'none'; // Esconde a UI
+            
+            generateFood();
+            
+            // Limpa loop anterior se existir e inicia
+            if(gameLoopTimeout) clearTimeout(gameLoopTimeout);
+            gameLoop();
+        }
+
+        /**
+         * Loop Principal do Jogo (Game Loop)
+         */
+        function gameLoop() {
+            if (!isPlaying) return;
+
+            changingDirection = false;
+            
+            // Atualização de estado (Lógica)
+            if (checkGameOver()) {
+                handleGameOver();
+                return;
+            }
+
+            clearCanvas();
+            drawFood();
+            advanceSnake();
+            drawSnake();
+
+            // Agenda o próximo frame
+            gameLoopTimeout = setTimeout(gameLoop, GAME_SPEED);
+        }
+
+        /**
+         * Limpa a tela a cada frame e redesenha o ambiente
+         */
+        function clearCanvas() {
+            ctx.fillStyle = "#1a1a1a"; // Fundo mais moderno
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Adiciona um grid sutil para o campo de jogo dar sensação de profundidade/tabuleiro
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+            ctx.lineWidth = 1;
+            for(let i = 0; i <= canvas.width; i += TILE_SIZE) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, canvas.height);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(canvas.width, i);
+                ctx.stroke();
+            }
+        }
+
+        /**
+         * Lógica de Movimentação e Crescimento da Cobra
+         */
+        function advanceSnake() {
+            // Calcula a nova posição da cabeça
+            const head = { 
+                x: snake[0].x + dx, 
+                y: snake[0].y + dy 
+            };
+            
+            // Adiciona a nova cabeça ao início do array
+            snake.unshift(head);
+
+            // Verifica se a cobra comeu a comida
+            const hasEatenFood = head.x === foodX && head.y === foodY;
+            
+            if (hasEatenFood) {
+                // Aumenta pontuação e gera nova comida
+                score += 10;
+                scoreDisplay.textContent = score;
+                generateFood();
+            } else {
+                // Se não comeu, remove a cauda (simulando movimento contínuo)
+                snake.pop();
+            }
+        }
+
+        /**
+         * Renderiza a Cobra no Canvas
+         */
+        function drawSnake() {
+            snake.forEach((part, index) => {
+                const isHead = index === 0;
+
+                ctx.fillStyle = isHead ? "#FFFFFF" : "#CCCCCC";
+                ctx.strokeStyle = "#000000";
+                ctx.lineWidth = 2;
+
+                if (isHead) {
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = "rgba(255, 255, 255, 0.5)";
+                } else {
+                    ctx.shadowBlur = 0;
+                }
+
+                ctx.fillRect(part.x * TILE_SIZE, part.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                ctx.strokeRect(part.x * TILE_SIZE, part.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+
+                ctx.shadowBlur = 0;
+            });
+        }
+
+
+        function drawFood() {
+            if (isFoodImgLoaded) {
+                ctx.shadowBlur = 15;
+                //ctx.shadowColor = "rgba(255, 0, 0, 0.6)"; // Aura vermelha em volta do escudo
+
+                foodSpin += 0.25;
+                const px = foodX * TILE_SIZE;
+                const py = foodY * TILE_SIZE;
+                const cx = px + TILE_SIZE / 2;
+                const cy = py + TILE_SIZE / 2;
+
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(foodSpin);
+                ctx.drawImage(foodImg, -TILE_SIZE / 2, -TILE_SIZE / 2, TILE_SIZE, TILE_SIZE);
+                ctx.restore();
+
+                ctx.shadowBlur = 0; 
+            } else {
+                ctx.fillStyle = "#FF0000"; 
+                ctx.strokeStyle = "#880000";
+                ctx.fillRect(foodX * TILE_SIZE, foodY * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+                ctx.strokeRect(foodX * TILE_SIZE, foodY * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+            }
+        }
+
+
+        function generateFood() {
+            foodX = Math.floor(Math.random() * TILE_COUNT);
+            foodY = Math.floor(Math.random() * TILE_COUNT);
+
+            const isFoodOnSnake = snake.some(part => part.x === foodX && part.y === foodY);
+            if (isFoodOnSnake) {
+                generateFood();
+            }
+        }
+
+        function checkGameOver() {
+            for (let i = 4; i < snake.length; i++) {
+                if (snake[i].x === snake[0].x && snake[i].y === snake[0].y) {
+                    return true;
+                }
+            }
+
+            const hitLeftWall = snake[0].x < 0;
+            const hitRightWall = snake[0].x >= TILE_COUNT;
+            const hitTopWall = snake[0].y < 0;
+            const hitBottomWall = snake[0].y >= TILE_COUNT;
+
+            return hitLeftWall || hitRightWall || hitTopWall || hitBottomWall;
+        }
+
+
+        function handleGameOver() {
+            isPlaying = false;
+            
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem("dudesGameHighScore", highScore);
+                highScoreDisplay.textContent = highScore;
+            }
+
+            overlayTitle.textContent = "Já perdeu uai?";
+            overlaySubtitle.textContent = `Você fez ${score} pontos.`;
+            startBtn.textContent = "Tenta de novo";
+            overlay.style.display = 'flex'; // Mostra a UI
+
+            anthemAudio.volume = 1;
+            anthemAudio.currentTime = 0; 
+            anthemAudio.play().catch(() => {
+                const currentIdx = anthemSources.indexOf(anthemAudio.src);
+                const nextIdx = currentIdx >= 0 ? currentIdx + 1 : 1;
+                if (nextIdx < anthemSources.length) {
+                    anthemAudio.src = anthemSources[nextIdx];
+                    anthemAudio.load();
+                }
+                anthemAudio.play().catch(err => {
+                    console.log("Erro ao tocar o áudio final:", err);
+                });
+            });
+        }
+
+
+        function handleKeyPress(event) {
+            if (changingDirection) return;
+
+            const LEFT_KEY = 37;
+            const RIGHT_KEY = 39;
+            const UP_KEY = 38;
+            const DOWN_KEY = 40;
+
+            const keyPressed = event.keyCode;
+            
+            if ([LEFT_KEY, RIGHT_KEY, UP_KEY, DOWN_KEY].includes(keyPressed) && isPlaying) {
+                event.preventDefault();
+            }
+
+            const goingUp = dy === -1;
+            const goingDown = dy === 1;
+            const goingRight = dx === 1;
+            const goingLeft = dx === -1;
+
+            if (keyPressed === LEFT_KEY && !goingRight) {
+                dx = -1; dy = 0; changingDirection = true;
+            }
+            if (keyPressed === UP_KEY && !goingDown) {
+                dx = 0; dy = -1; changingDirection = true;
+            }
+            if (keyPressed === RIGHT_KEY && !goingLeft) {
+                dx = 1; dy = 0; changingDirection = true;
+            }
+            if (keyPressed === DOWN_KEY && !goingUp) {
+                dx = 0; dy = 1; changingDirection = true;
+            }
+        }
+
+
+        function handleSwipe(startX, startY, endX, endY) {
+            if (changingDirection || !isPlaying) return;
+
+            const diffX = endX - startX;
+            const diffY = endY - startY;
+            
+            if (Math.abs(diffX) < 10 && Math.abs(diffY) < 10) return;
+
+            const goingUp = dy === -1;
+            const goingDown = dy === 1;
+            const goingRight = dx === 1;
+            const goingLeft = dx === -1;
+
+            if (Math.abs(diffX) > Math.abs(diffY)) {
+                if (diffX > 0 && !goingLeft) { // Swipe Direita
+                    dx = 1; dy = 0; changingDirection = true;
+                } else if (diffX < 0 && !goingRight) { // Swipe Esquerda
+                    dx = -1; dy = 0; changingDirection = true;
+                }
+            } else {
+                if (diffY > 0 && !goingUp) { // Swipe Baixo
+                    dx = 0; dy = 1; changingDirection = true;
+                } else if (diffY < 0 && !goingDown) { // Swipe Cima
+                    dx = 0; dy = -1; changingDirection = true;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
